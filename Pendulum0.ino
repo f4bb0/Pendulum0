@@ -30,12 +30,12 @@
 // 0x6C: Checksum (前面字节之和取低8位)
 
 // 当前设备的隐式 ID，用于匹配 UDP 数据包中的目标设备
-#define MY_DEVICE_ID    2 
+#define MY_DEVICE_ID    2
 #define CMD_SET_BASIC   0x01
 #define CMD_SWING       0x02
 #define CMD_SWING_LIMIT 0x03
 // WiFi 和 UDP 配置
-const char* ssid = "😅";       // 请修改为你的 WiFi 名称
+const char* ssid = "fabbo";       // 请修改为你的 WiFi 名称
 const char* password = "passpasspasspass"; // 请修改为你的 WiFi 密码
 unsigned int localUdpPort = 4210;          // 监听 UDP 端口
 // 定义与板子连接的引脚
@@ -259,8 +259,8 @@ void handleUdpPacket(uint8_t *buf, int len) {
 
     switch (cmd) {
       case CMD_SET_BASIC:
-        if (v1 != 0xFFFF && v1 <= 360) {
-          currentAngle = constrain((int)v1, 0, 180);
+        if (v1 != 0xFFFF && v1 <= 180) {
+          currentAngle = constrain((int)v1, 0, 360);
           Serial.printf("[DEV %d] SET_BASIC angle=%d\n", devId, currentAngle);
         }
         if (v2 != 0xFFFF && v2 <= 999) {
