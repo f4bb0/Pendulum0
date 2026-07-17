@@ -1,6 +1,7 @@
 import socket
 import sys
 import struct
+import time
 
 # 确保控制台输出 UTF-8 编码，避免中文乱码
 if hasattr(sys.stdout, 'reconfigure'):
@@ -18,6 +19,17 @@ CMD_SET_BASIC   = 0x01  # 设置基础参数 (角度, 显示)
 CMD_SWING       = 0x02  # 设置摆动参数 (速度, 显示)
 CMD_SWING_LIMIT = 0x03  # 设置摆动限位 (最小角度, 最大角度)
 DEFAULT_MAGIC   = 0xAA
+
+# ================= 差动摆动配置 =================
+DIFF_SWING_START_ID = 1
+DIFF_SWING_DEVICE_COUNT = 12
+DIFF_SWING_MIN_ANGLE = 30
+DIFF_SWING_MAX_ANGLE = 90
+DIFF_SWING_STEP = 1
+DIFF_SWING_DELAY_SEC = 0.08
+DIFF_SWING_STAGGER_CYCLES = 20
+DIFF_SWING_COLUMNS = 4
+ENABLE_DIFF_SWING_DEMO = True
 
 def build_udp_packet(cmd, start_id, devices_data, magic=DEFAULT_MAGIC):
     """
@@ -76,6 +88,86 @@ def send_raw_hex_packet(sock, target_ip, target_port, hex_string):
     return data_to_send
 
 
+def triangular_swing_angle(cycle_index, min_angle, max_angle, step):
+    """
+    生成一个在 min_angle 和 max_angle 之间往返的三角波角度。
+    """
+    if step <= 0:
+        raise ValueError("步长必须大于 0")
+    if max_angle < min_angle:
+        raise ValueError("最大角度必须大于等于最小角度")
+
+    span = max_angle - min_angle
+    if span % step != 0:
+        raise ValueError("角度跨度必须能被步长整除，才能精确往返")
+
+    steps_to_edge = span // step
+    if steps_to_edge == 0:
+        return min_angle
+
+    period = steps_to_edge * 2
+    phase = cycle_index % period
+    if phase <= steps_to_edge:
+        return min_angle + phase * step
+    return max_angle - (phase - steps_to_edge) * step
+
+
+def build_differential_angle_data(cycle_index, device_count, min_angle, max_angle, step, stagger_cycles=1, columns=1):
+    """
+    为多个设备构建差动摆动的角度数据。
+
+    默认按设备编号顺序延后；当 columns > 1 时，按“列”分组延后，
+    适合 3 行 4 列这类排列。比如 12 个设备在 4 列布局下，
+    会形成 1/5/9、2/6/10、3/7/11、4/8/12 四组波浪。
+    """
+    if device_count < 1:
+        raise ValueError("设备数量必须大于 0")
+    if stagger_cycles < 0:
+        raise ValueError("差动延迟周期必须大于等于 0")
+    if columns < 1:
+        raise ValueError("列数必须大于 0")
+
+    devices_data = []
+    for device_index in range(device_count):
+        if columns > 1:
+            device_offset = device_index % columns
+        else:
+            device_offset = device_index
+
+        effective_cycle = cycle_index - device_offset * stagger_cycles
+        if effective_cycle < 0:
+            angle = min_angle
+        else:
+            angle = triangular_swing_angle(effective_cycle, min_angle, max_angle, step)
+        devices_data.append((angle, angle))
+    return devices_data
+
+
+def run_differential_swing(sock, target_ip, target_port, start_id, device_count, min_angle, max_angle, step, delay_sec=0.5, stagger_cycles=1, columns=1):
+    """
+    使用 CMD_SET_BASIC 直接发送角度，实现 1-N 号设备的差动往返摆动。
+    """
+    cycle_index = 0
+    while True:
+        devices_data = build_differential_angle_data(
+            cycle_index,
+            device_count,
+            min_angle,
+            max_angle,
+            step,
+            stagger_cycles,
+            columns,
+        )
+        packet = send_control_packet(sock, target_ip, target_port, CMD_SET_BASIC, start_id, devices_data)
+
+        angle_text = ", ".join(f"{start_id + index}:{angle}" for index, (angle, _) in enumerate(devices_data))
+        print(f"[循环 {cycle_index}] {angle_text}")
+        print(f"发送 HEX: {packet.hex(' ').upper()}\n")
+
+        cycle_index += 1
+        time.sleep(delay_sec)
+
+
 # ================= 测试与使用示例 =================
 if __name__ == "__main__":
     try:
@@ -87,6 +179,23 @@ if __name__ == "__main__":
             udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             
             print(f"开始向 {TARGET_IP}:{TARGET_PORT} 发送控制指令...\n")
+
+            if ENABLE_DIFF_SWING_DEMO:
+                print("正在执行 1-12 号设备差动摆动示例：使用 CMD_SET_BASIC 直接发送角度。")
+                print(f"参数: 角度 {DIFF_SWING_MIN_ANGLE}° -> {DIFF_SWING_MAX_ANGLE}°，步长 {DIFF_SWING_STEP}°，延迟 {DIFF_SWING_DELAY_SEC}s，错位 {DIFF_SWING_STAGGER_CYCLES} 个循环，按 {DIFF_SWING_COLUMNS} 列分组\n")
+                run_differential_swing(
+                    udp_socket,
+                    TARGET_IP,
+                    TARGET_PORT,
+                    DIFF_SWING_START_ID,
+                    DIFF_SWING_DEVICE_COUNT,
+                    DIFF_SWING_MIN_ANGLE,
+                    DIFF_SWING_MAX_ANGLE,
+                    DIFF_SWING_STEP,
+                    DIFF_SWING_DELAY_SEC,
+                    DIFF_SWING_STAGGER_CYCLES,
+                    DIFF_SWING_COLUMNS,
+                )
 
             # ---------------------------------------------------------
             # 示例 0: 发送原始 HEX 字符串
@@ -135,18 +244,18 @@ if __name__ == "__main__":
             # 命令: CMD_SWING_LIMIT
             # 动作: 将所有设备的摆动限位统一设置为 30° 到 90°
             # ---------------------------------------------------------
-            data3 = [(30, 90) for _ in range(10)] 
-            pkt3 = send_control_packet(udp_socket, TARGET_IP, TARGET_PORT, CMD_SWING_LIMIT, 10, data3)
-            print(f"[示例3] 批量限位设置 (10个设备) -> 发送 HEX: {pkt3.hex(' ').upper()}")
+            # data3 = [(30, 90) for _ in range(10)] 
+            # pkt3 = send_control_packet(udp_socket, TARGET_IP, TARGET_PORT, CMD_SWING_LIMIT, 10, data3)
+            # print(f"[示例3] 批量限位设置 (10个设备) -> 发送 HEX: {pkt3.hex(' ').upper()}")
             
             # ---------------------------------------------------------
             # 示例 4: 设备 1-12 全部摇摆
             # 命令: CMD_SWING
             # 动作: 将设备 1 到 12 的摆动速度统一设置为 500，数码管显示保持不变
             # ---------------------------------------------------------
-            data4 = [(0, None) for _ in range(12)]
-            pkt4 = send_control_packet(udp_socket, TARGET_IP, TARGET_PORT, CMD_SWING, 1, data4)
-            print(f"[示例4] 1-12 设备全部摇摆 -> 发送 HEX: {pkt4.hex(' ').upper()}")
+            # data4 = [(0, None) for _ in range(12)]
+            # pkt4 = send_control_packet(udp_socket, TARGET_IP, TARGET_PORT, CMD_SWING, 1, data4)
+            # print(f"[示例4] 1-12 设备全部摇摆 -> 发送 HEX: {pkt4.hex(' ').upper()}")
             
             # ---------------------------------------------------------
             # 示例 5: 设备 1-16 全部 30° 不动，显示 888
@@ -154,9 +263,9 @@ if __name__ == "__main__":
             # 动作: 将设备 1 到 16 的角度统一设置为 30，数码管显示设置为 888（显示值 888）
             # 技巧: 角度使用 30（0-65535 范围内），显示为 3 位数 888
             # ---------------------------------------------------------
-            data5 = [(30, 888) for _ in range(16)]
-            pkt5 = send_control_packet(udp_socket, TARGET_IP, TARGET_PORT, CMD_SET_BASIC, 1, data5)
-            print(f"[示例5] 1-16 设备全部设为 30° 且显示 888 -> 发送 HEX: {pkt5.hex(' ').upper()}")
+            # data5 = [(30, 888) for _ in range(16)]
+            # pkt5 = send_control_packet(udp_socket, TARGET_IP, TARGET_PORT, CMD_SET_BASIC, 1, data5)
+            # print(f"[示例5] 1-16 设备全部设为 30° 且显示 888 -> 发送 HEX: {pkt5.hex(' ').upper()}")
             
             
             print("\n✅ 所有指令发送完毕，Socket 已自动安全关闭。")
