@@ -11,6 +11,8 @@ from control import *
 CAMERA_INDEX = 0
 MOTION_THRESHOLD = 25
 MOTION_PIXELS_MAX_RATIO = 0.12
+MOTION_SMOOTH_ALPHA = 0.3
+STEP_SMOOTH_ALPHA = 0.6
 
 
 def _build_valid_step_choices(min_angle, max_angle):
@@ -88,19 +90,37 @@ def DIFF_SWING_DEMO():
                 frame_buffer.append(frame)
                 if len(frame_buffer) < 3:
                     continue
-                motion_pixels, binary_mask = _calculate_motion_pixels(frame_buffer[0], frame_buffer[1], frame_buffer[2])
+                motion_pixels_raw, binary_mask = _calculate_motion_pixels(frame_buffer[0], frame_buffer[1], frame_buffer[2])
                 frame_area = frame.shape[0] * frame.shape[1]
-                step = _map_motion_pixels_to_step(motion_pixels, frame_area, DIFF_SWING_MIN_ANGLE, DIFF_SWING_MAX_ANGLE)
+
+                # 平滑 motion_pixels（EMA）并平滑步长索引，避免剧烈跳变
+                if not hasattr(cv_worker, "_smoothed_motion"):
+                    cv_worker._smoothed_motion = float(motion_pixels_raw)
+                if not hasattr(cv_worker, "_smoothed_step_idx"):
+                    cv_worker._smoothed_step_idx = 0.0
+
+                cv_worker._smoothed_motion = MOTION_SMOOTH_ALPHA * motion_pixels_raw + (1 - MOTION_SMOOTH_ALPHA) * cv_worker._smoothed_motion
+
+                # 计算最大参考像素数并映射到步长索引（float）
+                valid_steps = _build_valid_step_choices(DIFF_SWING_MIN_ANGLE, DIFF_SWING_MAX_ANGLE)
+                motion_pixels_max = max(1, int(frame_area * MOTION_PIXELS_MAX_RATIO))
+                ratio = max(0.0, min(1.0, cv_worker._smoothed_motion / motion_pixels_max))
+                float_idx = ratio * (len(valid_steps) - 1)
+
+                cv_worker._smoothed_step_idx = STEP_SMOOTH_ALPHA * float_idx + (1 - STEP_SMOOTH_ALPHA) * cv_worker._smoothed_step_idx
+                step_idx = int(round(cv_worker._smoothed_step_idx))
+                step_idx = max(0, min(len(valid_steps) - 1, step_idx))
+                step = valid_steps[step_idx]
 
                 with state.lock:
-                    state.motion_pixels = motion_pixels
+                    state.motion_pixels = int(round(cv_worker._smoothed_motion))
                     state.step = step
 
                 # 可视化：在当前帧上叠加运动掩码与文字
                 try:
                     mask_bgr = cv2.cvtColor(binary_mask, cv2.COLOR_GRAY2BGR)
                     overlay = cv2.addWeighted(frame_buffer[2], 0.7, mask_bgr, 0.3, 0)
-                    cv2.putText(overlay, f"Motion: {motion_pixels}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+                    cv2.putText(overlay, f"Motion: {int(round(cv_worker._smoothed_motion))}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
                     cv2.putText(overlay, f"Step: {step}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
                     cv2.imshow("Motion Detection", overlay)
                     if cv2.waitKey(1) & 0xFF == ord('q'):
