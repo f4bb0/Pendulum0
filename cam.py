@@ -14,7 +14,7 @@ MOTION_THRESHOLD = 25
 MOTION_PIXELS_MAX_RATIO = 0.01
 MOTION_SMOOTH_ALPHA = 0.2
 STEP_SMOOTH_ALPHA = 0.6
-STEP_HOLD_SEC = 10
+STEP_HOLD_SEC = 3
 STEP_RELEASE_ALPHA = 0.01
 WEB_HOST = "0.0.0.0"
 WEB_PORT = 8080
@@ -53,12 +53,20 @@ class _WebHandler(BaseHTTPRequestHandler):
         return
 
 
-def _build_valid_step_choices(min_angle, max_angle):
+def _build_valid_step_choices(min_angle, max_angle, max_step_limit=None):
     span = max_angle - min_angle
     if span <= 0:
         raise ValueError("最大角度必须大于最小角度")
 
-    choices = [0] + [step for step in range(1, span + 1) if span % step == 0]
+    if max_step_limit is None:
+        max_step_limit = MAX_STEP_LIMIT
+    if max_step_limit < 0:
+        raise ValueError("最大步长限制必须大于等于 0")
+
+    choices = [0] + [
+        step for step in range(1, span + 1)
+        if span % step == 0 and step <= max_step_limit
+    ]
     if not choices:
         raise ValueError("无法为当前角度范围生成有效步长")
     return choices
@@ -150,7 +158,11 @@ def DIFF_SWING_DEMO():
                 )
 
                 # 计算最大参考像素数并映射到步长索引（float）
-                valid_steps = _build_valid_step_choices(DIFF_SWING_MIN_ANGLE, DIFF_SWING_MAX_ANGLE)
+                valid_steps = _build_valid_step_choices(
+                    DIFF_SWING_MIN_ANGLE,
+                    DIFF_SWING_MAX_ANGLE,
+                    MAX_STEP_LIMIT,
+                )
                 motion_pixels_max = max(1, int(frame_area * MOTION_PIXELS_MAX_RATIO))
                 ratio = max(0.0, min(1.0, cv_worker._smoothed_motion / motion_pixels_max))
                 float_idx = ratio * (len(valid_steps) - 1)

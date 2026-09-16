@@ -25,6 +25,7 @@ DIFF_SWING_START_ID = 1
 DIFF_SWING_DEVICE_COUNT = 24
 DIFF_SWING_MIN_ANGLE = 30
 DIFF_SWING_MAX_ANGLE = 90
+MAX_STEP_LIMIT = 10
 DIFF_SWING_STEP = 1
 DIFF_SWING_DELAY_SEC = 0.08
 DIFF_SWING_STAGGER_CYCLES = 20
@@ -289,11 +290,12 @@ if __name__ == "__main__":
             # 命令: CMD_SET_BASIC
             # 动作: 将设备 1 到 16 的角度统一设置为 30，数码管显示设置为 888（显示值 888）
             # 技巧: 角度使用 30（0-65535 范围内），显示为 3 位数 888
+            
             # ---------------------------------------------------------
             #time.sleep(10)
-            #data5 = [(30, 888) for _ in range(24)]
-            #pkt5 = send_control_packet(udp_socket, TARGET_IP, TARGET_PORT, CMD_SET_BASIC, 1, data5)
-            #print(f"[示例5] 1-16 设备全部设为 30° 且显示 888 -> 发送 HEX: {pkt5.hex(' ').upper()}")
+            data5 = [(0, 888) for _ in range(24)]
+            pkt5 = send_control_packet(udp_socket, TARGET_IP, TARGET_PORT, CMD_SET_BASIC, 1, data5)
+            print(f"[示例5] 1-16 设备全部设为 30° 且显示 888 -> 发送 HEX: {pkt5.hex(' ').upper()}")
             
             
             print("\n✅ 所有指令发送完毕，Socket 已自动安全关闭。")
