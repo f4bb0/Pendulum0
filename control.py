@@ -25,7 +25,7 @@ DIFF_SWING_START_ID = 1
 DIFF_SWING_DEVICE_COUNT = 24
 DIFF_SWING_MIN_ANGLE = 30
 DIFF_SWING_MAX_ANGLE = 90
-MAX_STEP_LIMIT = 10
+MAX_STEP_LIMIT = 5
 DIFF_SWING_STEP = 1
 DIFF_SWING_DELAY_SEC = 0.08
 DIFF_SWING_STAGGER_CYCLES = 20
@@ -124,6 +124,14 @@ def triangular_swing_angle(cycle_index, min_angle, max_angle, step):
     return max_angle - (phase - steps_to_edge) * step
 
 
+def angle_to_display_value(angle, min_angle, max_angle):
+    """将角度按当前摆动范围映射为 0-999 的显示值。"""
+    if max_angle <= min_angle:
+        raise ValueError("最大角度必须大于最小角度")
+    ratio = (angle - min_angle) / (max_angle - min_angle)
+    return round(max(0.0, min(1.0, ratio)) * 999)
+
+
 def build_differential_angle_data(cycle_index, device_count, min_angle, max_angle, step, stagger_cycles=1, columns=1, column_groups=None):
     """
     为多个设备构建差动摆动的角度数据。
@@ -165,7 +173,8 @@ def build_differential_angle_data(cycle_index, device_count, min_angle, max_angl
             angle = min_angle
         else:
             angle = triangular_swing_angle(effective_cycle, min_angle, max_angle, step)
-        devices_data.append((angle, angle))
+        display_value = angle_to_display_value(angle, min_angle, max_angle)
+        devices_data.append((angle, display_value))
     return devices_data
 
 
