@@ -14,6 +14,8 @@ MOTION_THRESHOLD = 25
 MOTION_PIXELS_MAX_RATIO = 0.01
 MOTION_SMOOTH_ALPHA = 0.2
 STEP_SMOOTH_ALPHA = 0.6
+STEP_HOLD_SEC = 10
+STEP_RELEASE_ALPHA = 0.01
 WEB_HOST = "0.0.0.0"
 WEB_PORT = 8080
 
@@ -56,7 +58,7 @@ def _build_valid_step_choices(min_angle, max_angle):
     if span <= 0:
         raise ValueError("最大角度必须大于最小角度")
 
-    choices = [step for step in range(1, span + 1) if span % step == 0]
+    choices = [0] + [step for step in range(1, span + 1) if span % step == 0]
     if not choices:
         raise ValueError("无法为当前角度范围生成有效步长")
     return choices
@@ -108,7 +110,7 @@ def DIFF_SWING_DEMO():
             self.lock = threading.Lock()
             self.frame_condition = threading.Condition()
             self.jpeg_frame = None
-            self.step = max(1, DIFF_SWING_STEP)
+            self.step = max(0, DIFF_SWING_STEP)
             self.motion_pixels = 0
             self.detection_fps = 0.0
             self.send_fps = 0.0
@@ -123,6 +125,7 @@ def DIFF_SWING_DEMO():
             frame_buffer = deque(maxlen=3)
             detection_count = 0
             fps_start = time.monotonic()
+            last_motion_time = time.monotonic()
             while not state.stop_event.is_set():
                 ret, frame = camera.read()
                 if not ret:
@@ -141,7 +144,10 @@ def DIFF_SWING_DEMO():
                 if not hasattr(cv_worker, "_smoothed_step_idx"):
                     cv_worker._smoothed_step_idx = 0.0
 
-                cv_worker._smoothed_motion = MOTION_SMOOTH_ALPHA * motion_pixels_raw + (1 - MOTION_SMOOTH_ALPHA) * cv_worker._smoothed_motion
+                cv_worker._smoothed_motion = (
+                    MOTION_SMOOTH_ALPHA * motion_pixels_raw
+                    + (1 - MOTION_SMOOTH_ALPHA) * cv_worker._smoothed_motion
+                )
 
                 # 计算最大参考像素数并映射到步长索引（float）
                 valid_steps = _build_valid_step_choices(DIFF_SWING_MIN_ANGLE, DIFF_SWING_MAX_ANGLE)
@@ -149,7 +155,16 @@ def DIFF_SWING_DEMO():
                 ratio = max(0.0, min(1.0, cv_worker._smoothed_motion / motion_pixels_max))
                 float_idx = ratio * (len(valid_steps) - 1)
 
-                cv_worker._smoothed_step_idx = STEP_SMOOTH_ALPHA * float_idx + (1 - STEP_SMOOTH_ALPHA) * cv_worker._smoothed_step_idx
+                now = time.monotonic()
+                if motion_pixels_raw > 0:
+                    last_motion_time = now
+                    cv_worker._smoothed_step_idx = (
+                        STEP_SMOOTH_ALPHA * float_idx
+                        + (1 - STEP_SMOOTH_ALPHA) * cv_worker._smoothed_step_idx
+                    )
+                elif now - last_motion_time >= STEP_HOLD_SEC:
+                    cv_worker._smoothed_step_idx *= 1 - STEP_RELEASE_ALPHA
+
                 step_idx = int(round(cv_worker._smoothed_step_idx))
                 step_idx = max(0, min(len(valid_steps) - 1, step_idx))
                 step = valid_steps[step_idx]

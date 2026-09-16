@@ -101,8 +101,10 @@ def triangular_swing_angle(cycle_index, min_angle, max_angle, step):
     """
     生成一个在 min_angle 和 max_angle 之间往返的三角波角度。
     """
-    if step <= 0:
-        raise ValueError("步长必须大于 0")
+    if step == 0:
+        return min_angle
+    if step < 0:
+        raise ValueError("步长必须大于等于 0")
     if max_angle < min_angle:
         raise ValueError("最大角度必须大于等于最小角度")
 
