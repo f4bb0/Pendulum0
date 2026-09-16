@@ -22,14 +22,23 @@ DEFAULT_MAGIC   = 0xAA
 
 # ================= 差动摆动配置 =================
 DIFF_SWING_START_ID = 1
-DIFF_SWING_DEVICE_COUNT = 12
+DIFF_SWING_DEVICE_COUNT = 24
 DIFF_SWING_MIN_ANGLE = 30
 DIFF_SWING_MAX_ANGLE = 90
 DIFF_SWING_STEP = 1
 DIFF_SWING_DELAY_SEC = 0.08
 DIFF_SWING_STAGGER_CYCLES = 20
-DIFF_SWING_COLUMNS = 4
-ENABLE_DIFF_SWING_DEMO = True
+DIFF_SWING_COLUMN_GROUPS = (
+    (1, 5, 9),
+    (2, 6, 10),
+    (3, 7, 11),
+    (4, 8, 12),
+    (13, 17, 21),
+    (14, 18, 22),
+    (15, 19, 23),
+    (16, 20, 24),
+)
+ENABLE_DIFF_SWING_DEMO = False
 
 def build_udp_packet(cmd, start_id, devices_data, magic=DEFAULT_MAGIC):
     """
@@ -112,13 +121,13 @@ def triangular_swing_angle(cycle_index, min_angle, max_angle, step):
     return max_angle - (phase - steps_to_edge) * step
 
 
-def build_differential_angle_data(cycle_index, device_count, min_angle, max_angle, step, stagger_cycles=1, columns=1):
+def build_differential_angle_data(cycle_index, device_count, min_angle, max_angle, step, stagger_cycles=1, columns=1, column_groups=None):
     """
     为多个设备构建差动摆动的角度数据。
 
-    默认按设备编号顺序延后；当 columns > 1 时，按“列”分组延后，
-    适合 3 行 4 列这类排列。比如 12 个设备在 4 列布局下，
-    会形成 1/5/9、2/6/10、3/7/11、4/8/12 四组波浪。
+    1. 未传入 column_groups 时，按设备顺序或按列数 columns 进行错位。
+    2. 传入 column_groups 时，按显式列组表进行错位，适合 24 个设备这种
+       两个 3x4 面板拼接的布局。
     """
     if device_count < 1:
         raise ValueError("设备数量必须大于 0")
@@ -127,9 +136,23 @@ def build_differential_angle_data(cycle_index, device_count, min_angle, max_angl
     if columns < 1:
         raise ValueError("列数必须大于 0")
 
+    group_offsets = {}
+    if column_groups is not None:
+        for group_index, group in enumerate(column_groups):
+            for device_id in group:
+                device_id = int(device_id)
+                if device_id in group_offsets:
+                    raise ValueError(f"设备 {device_id} 在 column_groups 中重复出现")
+                group_offsets[device_id] = group_index
+
     devices_data = []
     for device_index in range(device_count):
-        if columns > 1:
+        device_id = device_index + 1
+        if column_groups is not None:
+            if device_id not in group_offsets:
+                raise ValueError(f"设备 {device_id} 未出现在 column_groups 中")
+            device_offset = group_offsets[device_id]
+        elif columns > 1:
             device_offset = device_index % columns
         else:
             device_offset = device_index
@@ -143,7 +166,7 @@ def build_differential_angle_data(cycle_index, device_count, min_angle, max_angl
     return devices_data
 
 
-def run_differential_swing(sock, target_ip, target_port, start_id, device_count, min_angle, max_angle, step, delay_sec=0.5, stagger_cycles=1, columns=1):
+def run_differential_swing(sock, target_ip, target_port, start_id, device_count, min_angle, max_angle, step, delay_sec=0.5, stagger_cycles=1, columns=1, column_groups=None):
     """
     使用 CMD_SET_BASIC 直接发送角度，实现 1-N 号设备的差动往返摆动。
     """
@@ -157,6 +180,7 @@ def run_differential_swing(sock, target_ip, target_port, start_id, device_count,
             step,
             stagger_cycles,
             columns,
+            column_groups,
         )
         packet = send_control_packet(sock, target_ip, target_port, CMD_SET_BASIC, start_id, devices_data)
 
@@ -181,8 +205,8 @@ if __name__ == "__main__":
             print(f"开始向 {TARGET_IP}:{TARGET_PORT} 发送控制指令...\n")
 
             if ENABLE_DIFF_SWING_DEMO:
-                print("正在执行 1-12 号设备差动摆动示例：使用 CMD_SET_BASIC 直接发送角度。")
-                print(f"参数: 角度 {DIFF_SWING_MIN_ANGLE}° -> {DIFF_SWING_MAX_ANGLE}°，步长 {DIFF_SWING_STEP}°，延迟 {DIFF_SWING_DELAY_SEC}s，错位 {DIFF_SWING_STAGGER_CYCLES} 个循环，按 {DIFF_SWING_COLUMNS} 列分组\n")
+                print("正在执行 1-24 号设备差动摆动示例：使用 CMD_SET_BASIC 直接发送角度。")
+                print(f"参数: 角度 {DIFF_SWING_MIN_ANGLE}° -> {DIFF_SWING_MAX_ANGLE}°，步长 {DIFF_SWING_STEP}°，延迟 {DIFF_SWING_DELAY_SEC}s，错位 {DIFF_SWING_STAGGER_CYCLES} 个循环，按显式列组分组\n")
                 run_differential_swing(
                     udp_socket,
                     TARGET_IP,
@@ -194,7 +218,8 @@ if __name__ == "__main__":
                     DIFF_SWING_STEP,
                     DIFF_SWING_DELAY_SEC,
                     DIFF_SWING_STAGGER_CYCLES,
-                    DIFF_SWING_COLUMNS,
+                    1,
+                    DIFF_SWING_COLUMN_GROUPS,
                 )
 
             # ---------------------------------------------------------
@@ -253,9 +278,9 @@ if __name__ == "__main__":
             # 命令: CMD_SWING
             # 动作: 将设备 1 到 12 的摆动速度统一设置为 500，数码管显示保持不变
             # ---------------------------------------------------------
-            # data4 = [(0, None) for _ in range(12)]
-            # pkt4 = send_control_packet(udp_socket, TARGET_IP, TARGET_PORT, CMD_SWING, 1, data4)
-            # print(f"[示例4] 1-12 设备全部摇摆 -> 发送 HEX: {pkt4.hex(' ').upper()}")
+            data4 = [( 0, None) for _ in range(24)]
+            pkt4 = send_control_packet(udp_socket, TARGET_IP, TARGET_PORT, CMD_SWING, 1, data4)
+            print(f"[示例4] 1-12 设备全部摇摆 -> 发送 HEX: {pkt4.hex(' ').upper()}")
             
             # ---------------------------------------------------------
             # 示例 5: 设备 1-16 全部 30° 不动，显示 888
@@ -263,9 +288,10 @@ if __name__ == "__main__":
             # 动作: 将设备 1 到 16 的角度统一设置为 30，数码管显示设置为 888（显示值 888）
             # 技巧: 角度使用 30（0-65535 范围内），显示为 3 位数 888
             # ---------------------------------------------------------
-            # data5 = [(30, 888) for _ in range(16)]
-            # pkt5 = send_control_packet(udp_socket, TARGET_IP, TARGET_PORT, CMD_SET_BASIC, 1, data5)
-            # print(f"[示例5] 1-16 设备全部设为 30° 且显示 888 -> 发送 HEX: {pkt5.hex(' ').upper()}")
+            #time.sleep(10)
+            #data5 = [(30, 888) for _ in range(24)]
+            #pkt5 = send_control_packet(udp_socket, TARGET_IP, TARGET_PORT, CMD_SET_BASIC, 1, data5)
+            #print(f"[示例5] 1-16 设备全部设为 30° 且显示 888 -> 发送 HEX: {pkt5.hex(' ').upper()}")
             
             
             print("\n✅ 所有指令发送完毕，Socket 已自动安全关闭。")

@@ -30,7 +30,7 @@
 // 0x6C: Checksum (前面字节之和取低8位)
 
 // 当前设备的隐式 ID，用于匹配 UDP 数据包中的目标设备
-#define MY_DEVICE_ID    2
+#define MY_DEVICE_ID    21
 #define CMD_SET_BASIC   0x01
 #define CMD_SWING       0x02
 #define CMD_SWING_LIMIT 0x03

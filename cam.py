@@ -10,8 +10,8 @@ from control import *
 
 CAMERA_INDEX = 0
 MOTION_THRESHOLD = 25
-MOTION_PIXELS_MAX_RATIO = 0.12
-MOTION_SMOOTH_ALPHA = 0.3
+MOTION_PIXELS_MAX_RATIO = 0.01
+MOTION_SMOOTH_ALPHA = 0.2
 STEP_SMOOTH_ALPHA = 0.6
 
 
@@ -144,7 +144,7 @@ def DIFF_SWING_DEMO():
         try:
             udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             print(f"开始向 {TARGET_IP}:{TARGET_PORT} 发送控制指令...\n")
-            print("正在执行 1-12 号设备差动摆动示例：CV 和控制运行于独立线程。")
+            print("正在执行 1-24 号设备差动摆动示例：CV 和控制运行于独立线程。")
 
             cycle_index = 0
             while not state.stop_event.is_set():
@@ -159,7 +159,8 @@ def DIFF_SWING_DEMO():
                     DIFF_SWING_MAX_ANGLE,
                     current_step,
                     DIFF_SWING_STAGGER_CYCLES,
-                    DIFF_SWING_COLUMNS,
+                    1,
+                    DIFF_SWING_COLUMN_GROUPS,
                 )
                 packet = send_control_packet(udp_socket, TARGET_IP, TARGET_PORT, CMD_SET_BASIC, DIFF_SWING_START_ID, devices_data)
 
