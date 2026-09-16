@@ -2,6 +2,7 @@ import socket
 import threading
 import time
 from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cv2
 
@@ -13,6 +14,41 @@ MOTION_THRESHOLD = 25
 MOTION_PIXELS_MAX_RATIO = 0.01
 MOTION_SMOOTH_ALPHA = 0.2
 STEP_SMOOTH_ALPHA = 0.6
+WEB_HOST = "0.0.0.0"
+WEB_PORT = 8080
+
+
+class _WebHandler(BaseHTTPRequestHandler):
+    state = None
+
+    def do_GET(self):
+        if self.path == "/stream":
+            with self.state.frame_condition:
+                frame = self.state.jpeg_frame
+            if frame is None:
+                self.send_error(503, "画面尚未准备好")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(len(frame)))
+            self.end_headers()
+            self.wfile.write(frame)
+            return
+
+        if self.path == "/":
+            page = b'<html><body><img src="/stream" onload="setTimeout(function(){location.reload()},1000)"></body></html>'
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(page)))
+            self.end_headers()
+            self.wfile.write(page)
+            return
+
+        self.send_error(404)
+
+    def log_message(self, format, *args):
+        return
 
 
 def _build_valid_step_choices(min_angle, max_angle):
@@ -70,8 +106,12 @@ def DIFF_SWING_DEMO():
     class SharedState:
         def __init__(self):
             self.lock = threading.Lock()
+            self.frame_condition = threading.Condition()
+            self.jpeg_frame = None
             self.step = max(1, DIFF_SWING_STEP)
             self.motion_pixels = 0
+            self.detection_fps = 0.0
+            self.send_fps = 0.0
             self.stop_event = threading.Event()
 
     state = SharedState()
@@ -81,6 +121,8 @@ def DIFF_SWING_DEMO():
         try:
             camera = _open_camera()
             frame_buffer = deque(maxlen=3)
+            detection_count = 0
+            fps_start = time.monotonic()
             while not state.stop_event.is_set():
                 ret, frame = camera.read()
                 if not ret:
@@ -116,28 +158,28 @@ def DIFF_SWING_DEMO():
                     state.motion_pixels = int(round(cv_worker._smoothed_motion))
                     state.step = step
 
-                # 可视化：在当前帧上叠加运动掩码与文字
-                try:
+                detection_count += 1
+                fps_elapsed = time.monotonic() - fps_start
+                if fps_elapsed >= 1.0:
+                    with state.lock:
+                        state.detection_fps = detection_count / fps_elapsed
+                    detection_count = 0
+                    fps_start = time.monotonic()
+
+                if not hasattr(cv_worker, "_last_web_frame_time") or time.time() - cv_worker._last_web_frame_time >= 1:
                     mask_bgr = cv2.cvtColor(binary_mask, cv2.COLOR_GRAY2BGR)
                     overlay = cv2.addWeighted(frame_buffer[2], 0.7, mask_bgr, 0.3, 0)
-                    cv2.putText(overlay, f"Motion: {int(round(cv_worker._smoothed_motion))}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
-                    cv2.putText(overlay, f"Step: {step}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
-                    cv2.imshow("Motion Detection", overlay)
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
-                        state.stop_event.set()
-                        break
-                except Exception:
-                    # 若GUI不可用，忽略显示错误，继续工作
-                    pass
+                    encoded, jpeg_frame = cv2.imencode(".jpg", overlay)
+                    if encoded:
+                        with state.frame_condition:
+                            state.jpeg_frame = jpeg_frame.tobytes()
+                            state.frame_condition.notify_all()
+                    cv_worker._last_web_frame_time = time.time()
 
                 time.sleep(0.01)
         finally:
             if camera is not None:
                 camera.release()
-            try:
-                cv2.destroyAllWindows()
-            except Exception:
-                pass
 
     def control_worker():
         udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -147,10 +189,13 @@ def DIFF_SWING_DEMO():
             print("正在执行 1-24 号设备差动摆动示例：CV 和控制运行于独立线程。")
 
             cycle_index = 0
+            send_count = 0
+            fps_start = time.monotonic()
             while not state.stop_event.is_set():
                 with state.lock:
                     current_step = state.step
                     motion_pixels = state.motion_pixels
+                    detection_fps = state.detection_fps
 
                 devices_data = build_differential_angle_data(
                     cycle_index,
@@ -164,9 +209,19 @@ def DIFF_SWING_DEMO():
                 )
                 packet = send_control_packet(udp_socket, TARGET_IP, TARGET_PORT, CMD_SET_BASIC, DIFF_SWING_START_ID, devices_data)
 
+                send_count += 1
+                fps_elapsed = time.monotonic() - fps_start
+                if fps_elapsed >= 1.0:
+                    with state.lock:
+                        state.send_fps = send_count / fps_elapsed
+                    send_count = 0
+                    fps_start = time.monotonic()
+                with state.lock:
+                    send_fps = state.send_fps
+
                 angle_text = ", ".join(f"{DIFF_SWING_START_ID + index}:{angle}" for index, (angle, _) in enumerate(devices_data))
-                print(f"[循环 {cycle_index}] 运动像素={motion_pixels}，动态步长={current_step}，{angle_text}")
-                print(f"发送 HEX: {packet.hex(' ').upper()}\n")
+                print(f"[循环 {cycle_index}] 检测FPS={detection_fps:.1f}，发送FPS={send_fps:.1f}，运动像素={motion_pixels}，动态步长={current_step}，{angle_text}")
+               # print(f"发送 HEX: {packet.hex(' ').upper()}\n")
 
                 cycle_index += 1
                 time.sleep(DIFF_SWING_DELAY_SEC)
@@ -175,10 +230,15 @@ def DIFF_SWING_DEMO():
 
     t_cv = threading.Thread(target=cv_worker, name="CV_THREAD", daemon=True)
     t_ctrl = threading.Thread(target=control_worker, name="CTRL_THREAD", daemon=True)
+    _WebHandler.state = state
+    web_server = ThreadingHTTPServer((WEB_HOST, WEB_PORT), _WebHandler)
+    t_web = threading.Thread(target=web_server.serve_forever, name="WEB_THREAD", daemon=True)
     t_cv.start()
     t_ctrl.start()
+    t_web.start()
+    print(f"检测画面地址: http://127.0.0.1:{WEB_PORT}/")
 
-    return t_cv, t_ctrl, state
+    return t_cv, t_ctrl, t_web, state
 
 
 # 现在可以直接使用 control.py 中的所有内容
@@ -188,9 +248,9 @@ def DIFF_SWING_DEMO():
 if __name__ == "__main__":
     try:
         result = DIFF_SWING_DEMO()
-        # DIFF_SWING_DEMO returns (cv_thread, ctrl_thread, state)
-        if isinstance(result, tuple) and len(result) == 3:
-            cv_t, ctrl_t, state = result
+        # DIFF_SWING_DEMO returns (cv_thread, ctrl_thread, web_thread, state)
+        if isinstance(result, tuple) and len(result) == 4:
+            cv_t, ctrl_t, web_t, state = result
             try:
                 while cv_t.is_alive() and ctrl_t.is_alive():
                     time.sleep(0.5)
